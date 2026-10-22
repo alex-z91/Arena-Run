@@ -21,7 +21,7 @@ class ArenaRunApiTests(unittest.TestCase):
             db.session.commit()
 
     def register(self, email, role="runner"):
-        return self.client.post("/api/auth/register", json={"name":"Atleta Teste", "email":email, "password":"verystrong123", "role":role, "birth_date":"1995-02-14", "city":"Belém, PA"})
+        return self.client.post("/api/auth/register", json={"name":"Atleta Teste", "email":email, "password":"verystrong123", "role":role, "birth_date":"1995-02-14", "city":"Belém, PA", "cpf":"52998224725", "rg":"1234567", "contact":"91999999999", "gender":"masculino", "team":"Equipe Teste", "shirt_size":"M"})
 
     def login(self, email, password):
         data=self.client.post("/api/auth/login",json={"email":email,"password":password})
