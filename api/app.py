@@ -17,6 +17,12 @@ class User(db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     birth_date = db.Column(db.String(10), nullable=True)
     city = db.Column(db.String(120), nullable=True)
+    cpf = db.Column(db.String(11), nullable=True, unique=True)
+    rg = db.Column(db.String(30), nullable=True)
+    contact = db.Column(db.String(30), nullable=True)
+    gender = db.Column(db.String(30), nullable=True)
+    team = db.Column(db.String(120), nullable=True)
+    shirt_size = db.Column(db.String(3), nullable=True)
     role = db.Column(db.String(24), nullable=False, default="runner")
     approved = db.Column(db.Boolean, nullable=False, default=False)
 
@@ -44,6 +50,7 @@ class Registration(db.Model):
     status = db.Column(db.String(30), nullable=False, default="awaiting_payment")
     category_snapshot = db.Column(db.String(60), nullable=True)
     locality_snapshot = db.Column(db.String(20), nullable=True)
+    team_snapshot = db.Column(db.String(120), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
@@ -99,7 +106,7 @@ def create_app():
         d=datetime.strptime(date, "%Y-%m-%d").date()
         return d.year-b.year-((d.month,d.day)<(b.month,b.day))
     def user_data(u):
-        return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city}
+        return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r):
         return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
@@ -114,17 +121,28 @@ def create_app():
         role = data.get("role", "runner")
         city = str(data.get("city","")).strip()
         birth = str(data.get("birth_date","")).strip()
+        cpf = "".join(c for c in str(data.get("cpf","")) if c.isdigit())
+        rg = str(data.get("rg","")).strip()
+        contact = str(data.get("contact","")).strip()
+        gender = str(data.get("gender","")).strip()
+        team = str(data.get("team","")).strip()
+        shirt = str(data.get("shirt_size","")).strip()
         if role=="runner":
             try:
                 parsed=datetime.strptime(birth,"%Y-%m-%d").date()
                 if parsed.isoformat()!=birth or parsed>=datetime.now(timezone.utc).date() or parsed.year<1900: raise ValueError()
             except ValueError: return error("Data de nascimento inválida")
             if not 2<=len(city)<=120: return error("Informe a cidade do atleta")
+            if len(cpf)!=11 or len(set(cpf))==1 or sum(int(cpf[i])*(10-i) for i in range(9))*10%11%10!=int(cpf[9]) or sum(int(cpf[i])*(11-i) for i in range(10))*10%11%10!=int(cpf[10]):
+                return error("CPF inválido")
+            if User.query.filter_by(cpf=cpf).first(): return error("CPF já cadastrado",409)
+            if not 3<=len(rg)<=30 or not 8<=len(contact)<=30 or gender not in ("feminino","masculino","outro","nao_informar") or len(team)>120 or shirt not in ("PP","P","M","G","GG","XG"):
+                return error("Confira RG, contato, gênero e tamanho da camiseta")
         if role not in ("runner", "organizer") or len(name) < 3 or len(name) > 100 or "@" not in email or len(email) > 180 or len(password) < 8 or len(password) > 128:
             return error("Preencha nome, e-mail e senha (mínimo 8 caracteres)")
         if User.query.filter_by(email=email).first():
             return error("E-mail já cadastrado", 409)
-        u = User(name=name, email=email, password_hash=generate_password_hash(password), role=role, approved=role=="runner",birth_date=birth if role=="runner" else None,city=city if role=="runner" else None)
+        u = User(name=name, email=email, password_hash=generate_password_hash(password), role=role, approved=role=="runner",birth_date=birth if role=="runner" else None,city=city if role=="runner" else None,cpf=cpf if role=="runner" else None,rg=rg if role=="runner" else None,contact=contact if role=="runner" else None,gender=gender if role=="runner" else None,team=team if role=="runner" else None,shirt_size=shirt if role=="runner" else None)
         db.session.add(u); db.session.commit()
         return jsonify({"user": user_data(u), "token": signer.dumps(u.id)}), 201
     @app.post("/api/auth/login")
@@ -175,7 +193,7 @@ def create_app():
         data=payload()
         try: distance_id=int(data.get("distance_id", 0))
         except (ValueError, TypeError): return error("Distância inválida")
-        size=data.get("shirt_size")
+        size=data.get("shirt_size") or user.shirt_size
         if size not in ("PP","P","M","G","GG","XG"):
             return error("Tamanho de camiseta inválido")
         d=db.session.get(Distance,distance_id)
@@ -192,7 +210,7 @@ def create_app():
         if age<0: return error("Data de nascimento incompatível com a corrida")
         # Categoria etária definitiva depende de regulamento versionado por evento.
         locality="local" if user.city.strip().casefold()==(race.local_city or race.city).strip().casefold() else "general"
-        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality)
+        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team)
         db.session.add(reg); db.session.commit()
         return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"simulated","price_cents":d.price_cents}),201
     @app.get("/api/registrations/me")
