@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: arena-run-api
+    runtime: python
+    plan: starter
+    region: ohio
+    rootDir: api
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT --workers 2 'app:create_app()'
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        value: https://arenarun.alexcoder.space
+      - key: DATABASE_URL
+        sync: false
+      - key: ENABLE_DEMO_PAYMENT
+        value: "0"
