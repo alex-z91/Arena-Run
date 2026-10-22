@@ -24,6 +24,8 @@ jobs:
           mkdir -p _site
           cp index.html _site/index.html
           cp atleta.html _site/atleta.html
+          cp inscricao.html _site/inscricao.html
+          cp login.html _site/login.html
           cp config.js _site/config.js
           cp CNAME _site/CNAME
           touch _site/.nojekyll
