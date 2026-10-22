@@ -217,7 +217,12 @@ def create_app():
     @auth()
     def my_registrations(user):
         rows=Registration.query.filter_by(runner_id=user.id).order_by(Registration.id.desc()).all()
-        return {"registrations":[{"id":x.id,"race":db.session.get(Race,db.session.get(Distance,x.distance_id).race_id).title,"distance":db.session.get(Distance,x.distance_id).label,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"date":db.session.get(Race,db.session.get(Distance,x.distance_id).race_id).date} for x in rows]}
+        result=[]
+        for x in rows:
+            dist=db.session.get(Distance,x.distance_id)
+            race=db.session.get(Race,dist.race_id)
+            result.append({"id":x.id,"race_id":race.id,"race":race.title,"city":race.city,"date":race.date,"distance":dist.label,"price_cents":dist.price_cents,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"team":x.team_snapshot,"created_at":x.created_at.isoformat() if x.created_at else None})
+        return {"registrations":result}
     @app.get("/api/organizer/registrations")
     @auth("organizer","master")
     def organizer_registrations(user):
