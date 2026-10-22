@@ -55,6 +55,20 @@ def create_app():
         raise RuntimeError("Configure SECRET_KEY e APP_ENV antes de iniciar")
     app.config["SECRET_KEY"] = secret or secrets.token_hex(32)
     db.init_app(app)
+    allowed_origin = os.environ.get("FRONTEND_ORIGIN", "").rstrip("/")
+    @app.after_request
+    def cors_headers(response):
+        if allowed_origin and request.headers.get("Origin") == allowed_origin:
+            response.headers["Access-Control-Allow-Origin"] = allowed_origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        return response
+    @app.before_request
+    def cors_preflight():
+        if request.method == "OPTIONS" and request.path.startswith("/api/"):
+            return app.make_default_options_response()
+
     signer = URLSafeTimedSerializer(app.config["SECRET_KEY"], salt="arena-run-auth")
     def error(message, status=400):
         return jsonify({"error": message}), status
