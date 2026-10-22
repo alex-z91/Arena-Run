@@ -21,7 +21,7 @@ class ArenaRunApiTests(unittest.TestCase):
             db.session.commit()
 
     def register(self, email, role="runner"):
-        return self.client.post("/api/auth/register", json={"name":"Atleta Teste", "email":email, "password":"verystrong123", "role":role})
+        return self.client.post("/api/auth/register", json={"name":"Atleta Teste", "email":email, "password":"verystrong123", "role":role, "birth_date":"1995-02-14", "city":"Belém, PA"})
 
     def login(self, email, password):
         data=self.client.post("/api/auth/login",json={"email":email,"password":password})
@@ -58,6 +58,9 @@ class ArenaRunApiTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/registrations",headers=runner_headers,json={"distance_id":distance_id,"shirt_size":"M"}).status_code,409)
         self.assertEqual(len(self.client.get("/api/organizer/registrations",headers=org_headers).json["registrations"]),1)
         self.assertEqual(len(self.client.get("/api/registrations/me",headers=runner_headers).json["registrations"]),1)
+        self.assertEqual(self.client.get("/api/registrations/me",headers=runner_headers).json["registrations"][0]["locality"],"local")
+        self.assertEqual(len(self.client.get("/api/events?q=Circuito").json["events"]),1)
+        self.assertEqual(len(self.client.get("/api/events?date=2026-11-16").json["events"]),0)
         self.assertEqual(self.client.post("/api/demo/registrations/"+str(reg.json["id"])+"/confirm",headers=master).status_code,403)
 
 if __name__=="__main__":
