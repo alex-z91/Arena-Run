@@ -15,6 +15,8 @@ class User(db.Model):
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(180), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    birth_date = db.Column(db.String(10), nullable=True)
+    city = db.Column(db.String(120), nullable=True)
     role = db.Column(db.String(24), nullable=False, default="runner")
     approved = db.Column(db.Boolean, nullable=False, default=False)
 
@@ -25,6 +27,7 @@ class Race(db.Model):
     city = db.Column(db.String(120), nullable=False)
     date = db.Column(db.String(10), nullable=False)
     published = db.Column(db.Boolean, nullable=False, default=False)
+    local_city = db.Column(db.String(120), nullable=True)
 
 class Distance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -39,6 +42,8 @@ class Registration(db.Model):
     distance_id = db.Column(db.Integer, db.ForeignKey("distance.id"), nullable=False, index=True)
     shirt_size = db.Column(db.String(3), nullable=False)
     status = db.Column(db.String(30), nullable=False, default="awaiting_payment")
+    category_snapshot = db.Column(db.String(60), nullable=True)
+    locality_snapshot = db.Column(db.String(20), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
@@ -75,10 +80,14 @@ def create_app():
                 return fn(user, *args, **kwargs)
             return inner
         return decorate
+    def age_on(birth, date):
+        b=datetime.strptime(birth, "%Y-%m-%d").date()
+        d=datetime.strptime(date, "%Y-%m-%d").date()
+        return d.year-b.year-((d.month,d.day)<(b.month,b.day))
     def user_data(u):
-        return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved}
+        return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city}
     def race_data(r):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_mode": "simulated"}
@@ -89,11 +98,19 @@ def create_app():
         email = str(data.get("email", "")).strip().lower()
         password = str(data.get("password", ""))
         role = data.get("role", "runner")
+        city = str(data.get("city","")).strip()
+        birth = str(data.get("birth_date","")).strip()
+        if role=="runner":
+            try:
+                parsed=datetime.strptime(birth,"%Y-%m-%d").date()
+                if parsed.isoformat()!=birth or parsed>=datetime.now(timezone.utc).date() or parsed.year<1900: raise ValueError()
+            except ValueError: return error("Data de nascimento inválida")
+            if not 2<=len(city)<=120: return error("Informe a cidade do atleta")
         if role not in ("runner", "organizer") or len(name) < 3 or len(name) > 100 or "@" not in email or len(email) > 180 or len(password) < 8 or len(password) > 128:
             return error("Preencha nome, e-mail e senha (mínimo 8 caracteres)")
         if User.query.filter_by(email=email).first():
             return error("E-mail já cadastrado", 409)
-        u = User(name=name, email=email, password_hash=generate_password_hash(password), role=role, approved=role=="runner")
+        u = User(name=name, email=email, password_hash=generate_password_hash(password), role=role, approved=role=="runner",birth_date=birth if role=="runner" else None,city=city if role=="runner" else None)
         db.session.add(u); db.session.commit()
         return jsonify({"user": user_data(u), "token": signer.dumps(u.id)}), 201
     @app.post("/api/auth/login")
@@ -109,7 +126,12 @@ def create_app():
         return user_data(user)
     @app.get("/api/events")
     def events():
-        return {"events": [race_data(r) for r in Race.query.filter_by(published=True).order_by(Race.date)]}
+        q=Race.query.filter_by(published=True)
+        term=str(request.args.get("q","")).strip()
+        day=str(request.args.get("date","")).strip()
+        if term: q=q.filter(db.or_(Race.title.ilike("%"+term[:100]+"%"),Race.city.ilike("%"+term[:100]+"%")))
+        if day: q=q.filter_by(date=day)
+        return {"events": [race_data(r) for r in q.order_by(Race.date).all()]}
     @app.post("/api/events")
     @auth("organizer", "master")
     def create_event(user):
@@ -128,7 +150,7 @@ def create_app():
                 if not (1<=len(label)<=30 and 0<=cents<=10000000 and 1<=capacity<=100000): raise ValueError()
                 validated.append((label,cents,capacity))
             except (KeyError, TypeError, ValueError): return error("Distância, preço ou vagas inválidos")
-        r=Race(organizer_id=user.id,title=title,city=city,date=date,published=True)
+        r=Race(organizer_id=user.id,title=title,city=city,date=date,published=True,local_city=str(data.get("local_city") or city).strip()[:120])
         db.session.add(r); db.session.flush()
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
@@ -150,20 +172,26 @@ def create_app():
         # Vagas reais requerem transação serializável/lock na publicação.
         occupied=Registration.query.filter_by(distance_id=d.id).filter(Registration.status!="canceled").count()
         if occupied>=d.capacity: return error("Vagas esgotadas",409)
-        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size)
+        if not user.birth_date or not user.city: return error("Complete data de nascimento e cidade do atleta antes da inscrição")
+        race=db.session.get(Race,d.race_id)
+        age=age_on(user.birth_date,race.date)
+        if age<0: return error("Data de nascimento incompatível com a corrida")
+        # Categoria etária definitiva depende de regulamento versionado por evento.
+        locality="local" if user.city.strip().casefold()==(race.local_city or race.city).strip().casefold() else "general"
+        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality)
         db.session.add(reg); db.session.commit()
         return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"simulated","price_cents":d.price_cents}),201
     @app.get("/api/registrations/me")
     @auth()
     def my_registrations(user):
         rows=Registration.query.filter_by(runner_id=user.id).order_by(Registration.id.desc()).all()
-        return {"registrations":[{"id":x.id,"race":db.session.get(Race,db.session.get(Distance,x.distance_id).race_id).title,"distance":db.session.get(Distance,x.distance_id).label,"shirt_size":x.shirt_size,"status":x.status} for x in rows]}
+        return {"registrations":[{"id":x.id,"race":db.session.get(Race,db.session.get(Distance,x.distance_id).race_id).title,"distance":db.session.get(Distance,x.distance_id).label,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"date":db.session.get(Race,db.session.get(Distance,x.distance_id).race_id).date} for x in rows]}
     @app.get("/api/organizer/registrations")
     @auth("organizer","master")
     def organizer_registrations(user):
         q=db.session.query(Registration,Distance,Race,User).join(Distance,Registration.distance_id==Distance.id).join(Race,Distance.race_id==Race.id).join(User,Registration.runner_id==User.id)
         if user.role!="master": q=q.filter(Race.organizer_id==user.id)
-        return {"registrations":[{"id":reg.id,"runner":runner.name,"event":race.title,"distance":dist.label,"status":reg.status} for reg,dist,race,runner in q.order_by(Registration.id.desc()).all()]}
+        return {"registrations":[{"id":reg.id,"runner":runner.name,"event":race.title,"distance":dist.label,"status":reg.status,"locality":reg.locality_snapshot} for reg,dist,race,runner in q.order_by(Registration.id.desc()).all()]}
     @app.get("/api/master/organizers")
     @auth("master")
     def organizers(user):
