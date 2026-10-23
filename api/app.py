@@ -67,7 +67,7 @@ def create_app():
         raise RuntimeError("Configure SECRET_KEY e APP_ENV antes de iniciar")
     app.config["SECRET_KEY"] = secret or secrets.token_hex(32)
     db.init_app(app)
-    allowed_origins = {u.strip().rstrip("/") for u in (os.environ.get("FRONTEND_ORIGIN", "") + ",https://brain.alexcoder.space").split(",") if u.strip()}
+    allowed_origins = {u.strip().rstrip("/") for u in (os.environ.get("FRONTEND_ORIGIN", "") + ",https://brain.alexcoder.space,https://coach.alexcoder.space").split(",") if u.strip()}
     @app.after_request
     def cors_headers(response):
         if request.headers.get("Origin") in allowed_origins:
