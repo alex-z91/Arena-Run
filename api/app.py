@@ -53,6 +53,7 @@ class Registration(db.Model):
     locality_snapshot = db.Column(db.String(20), nullable=True)
     team_snapshot = db.Column(db.String(120), nullable=True)
     regulation_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
@@ -226,7 +227,7 @@ def create_app():
         for x in rows:
             dist=db.session.get(Distance,x.distance_id)
             race=db.session.get(Race,dist.race_id)
-            result.append({"id":x.id,"race_id":race.id,"race":race.title,"city":race.city,"date":race.date,"distance":dist.label,"price_cents":dist.price_cents,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"team":x.team_snapshot,"created_at":x.created_at.isoformat() if x.created_at else None})
+            result.append({"id":x.id,"race_id":race.id,"race":race.title,"city":race.city,"date":race.date,"distance":dist.label,"price_cents":dist.price_cents,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"team":x.team_snapshot,"created_at":x.created_at.isoformat() if x.created_at else None,"paid_at":x.paid_at.isoformat() if x.paid_at else None,"regulation_accepted_at":x.regulation_accepted_at.isoformat() if x.regulation_accepted_at else None})
         return {"registrations":result}
     @app.get("/api/organizer/registrations")
     @auth("organizer","master")
