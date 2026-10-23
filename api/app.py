@@ -125,8 +125,8 @@ def create_app():
         return d.year-b.year-((d.month,d.day)<(b.month,b.day))
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
-    def race_data(r):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "kits":r.kits or [], "lots":r.lots or [], "coupons":r.coupons or [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+    def race_data(r, include_coupons=False):
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "kits":r.kits or [], "lots":r.lots or [], "coupons":(r.coupons or []) if include_coupons else [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_integration": "not_configured"}
@@ -250,7 +250,7 @@ def create_app():
         db.session.add(r); db.session.flush()
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
-        return jsonify(race_data(r)), 201
+        return jsonify(race_data(r, True)), 201
     @app.put("/api/organizer/events/<int:race_id>")
     @auth("organizer")
     def update_event(user,race_id):
@@ -304,12 +304,12 @@ def create_app():
         Distance.query.filter_by(race_id=r.id).delete(synchronize_session=False)
         for label,cents,capacity in validated:db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
-        return jsonify(race_data(r))
+        return jsonify(race_data(r, True))
     @app.get("/api/organizer/events")
     @auth("organizer")
     def organizer_events(user):
         races=Race.query.filter_by(organizer_id=user.id).order_by(Race.id.desc()).all()
-        return {"events":[race_data(r) for r in races]}
+        return {"events":[race_data(r, True) for r in races]}
     @app.get("/api/organizer/overview")
     @auth("organizer")
     def organizer_overview(user):
@@ -329,7 +329,7 @@ def create_app():
         r.publication_status="submitted"
         r.published=False
         db.session.commit()
-        return race_data(r)
+        return race_data(r, True)
     @app.post("/api/registrations")
     @auth("runner", "organizer", "master")
     def create_registration(user):
