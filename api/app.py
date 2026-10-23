@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 from flask import Flask, jsonify, request, Response, abort
-from botocore.exceptions import ClientError
 import boto3
 from flask_sqlalchemy import SQLAlchemy
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -313,7 +312,7 @@ def create_app():
         key=os.environ.get("ARENA_MEDIA_ACCESS_KEY")
         secret=os.environ.get("ARENA_MEDIA_SECRET_KEY")
         if not all((endpoint,key,secret)):raise RuntimeError("Armazenamento de mídia indisponível")
-        return boto3.client("s3",endpoint_url=endpoint,aws_access_key_id=key,aws_secret_access_key=secret,region_name="us-east-2")
+        return boto3.client("s3",endpoint_url=endpoint,aws_access_key_id=key,aws_secret_access_key=secret,region_name="us-east-2",config=__import__("botocore.config",fromlist=["Config"]).Config(s3={"addressing_style":"path"}))
     @app.post("/api/organizer/events/<int:race_id>/card")
     @auth("organizer")
     def upload_race_card(user,race_id):
@@ -336,6 +335,14 @@ def create_app():
             try:media_client().delete_object(Bucket=os.environ.get("ARENA_MEDIA_BUCKET","arena-race-media"),Key=old)
             except Exception:app.logger.warning("Falha ao remover imagem antiga de %s",r.id)
         return {"card_url":"/api/events/"+str(r.id)+"/card"}
+    @app.get("/api/organizer/events/<int:race_id>/card")
+    @auth("organizer")
+    def private_race_card(user,race_id):
+        r=db.session.get(Race,race_id)
+        if not r or r.organizer_id!=user.id or not r.card_object_key:abort(404)
+        try:obj=media_client().get_object(Bucket=os.environ.get("ARENA_MEDIA_BUCKET","arena-race-media"),Key=r.card_object_key)
+        except Exception:abort(404)
+        return Response(obj["Body"].read(),mimetype="image/webp",headers={"Cache-Control":"private, no-store"})
     @app.get("/api/events/<int:race_id>/card")
     def public_race_card(race_id):
         r=db.session.get(Race,race_id)
