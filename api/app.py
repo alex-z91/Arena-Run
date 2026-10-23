@@ -34,6 +34,7 @@ class Race(db.Model):
     date = db.Column(db.String(10), nullable=False)
     published = db.Column(db.Boolean, nullable=False, default=False)
     local_city = db.Column(db.String(120), nullable=True)
+    regulation_text = db.Column(db.Text, nullable=True)
 
 class Distance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -51,6 +52,7 @@ class Registration(db.Model):
     category_snapshot = db.Column(db.String(60), nullable=True)
     locality_snapshot = db.Column(db.String(20), nullable=True)
     team_snapshot = db.Column(db.String(120), nullable=True)
+    regulation_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
@@ -108,7 +110,7 @@ def create_app():
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "regulation_text":r.regulation_text, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_mode": "simulated"}
@@ -193,7 +195,9 @@ def create_app():
         data=payload()
         try: distance_id=int(data.get("distance_id", 0))
         except (ValueError, TypeError): return error("Distância inválida")
-        size=data.get("shirt_size") or user.shirt_size
+        size=data.get("shirt_size")
+        if data.get("regulation_accepted") is not True:
+            return error("Leia e aceite o regulamento desta corrida")
         if size not in ("PP","P","M","G","GG","XG"):
             return error("Tamanho de camiseta inválido")
         d=db.session.get(Distance,distance_id)
@@ -206,11 +210,12 @@ def create_app():
         if occupied>=d.capacity: return error("Vagas esgotadas",409)
         if not user.birth_date or not user.city: return error("Complete data de nascimento e cidade do atleta antes da inscrição")
         race=db.session.get(Race,d.race_id)
+        if not race.regulation_text: return error("Regulamento ainda não disponível para esta corrida",409)
         age=age_on(user.birth_date,race.date)
         if age<0: return error("Data de nascimento incompatível com a corrida")
         # Categoria etária definitiva depende de regulamento versionado por evento.
         locality="local" if user.city.strip().casefold()==(race.local_city or race.city).strip().casefold() else "general"
-        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team)
+        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team,regulation_accepted_at=datetime.now(timezone.utc))
         db.session.add(reg); db.session.commit()
         return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"simulated","price_cents":d.price_cents}),201
     @app.get("/api/registrations/me")
