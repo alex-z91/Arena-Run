@@ -229,19 +229,21 @@ def create_app():
         try:
             clean_kits=[];clean_lots=[];clean_coupons=[]
             for k in kits:
-                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"])
+                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"]); eligible=k.get("distances",[])
                 if not (1<=len(name)<=100 and 0<=price<=10000000 and 0<=stock<=100000):raise ValueError()
-                clean_kits.append({"name":name,"price_cents":price,"capacity":stock})
+                if not isinstance(eligible,list) or not eligible or any(x not in [d[0] for d in validated] for x in eligible):raise ValueError()
+                clean_kits.append({"name":name,"price_cents":price,"capacity":stock,"distances":eligible})
             for l in lots:
-                name=str(l["name"]).strip();price=int(l["price_cents"]);ends=str(l["ends_at"])
-                datetime.strptime(ends,"%Y-%m-%d")
+                name=str(l["name"]).strip();price=int(l["price_cents"]);starts=str(l["starts_at"]);ends=str(l["ends_at"])
+                datetime.strptime(starts,"%Y-%m-%d");datetime.strptime(ends,"%Y-%m-%d")
+                if starts>ends or ends>date:raise ValueError()
                 if not (1<=len(name)<=80 and 0<=price<=10000000):raise ValueError()
-                clean_lots.append({"name":name,"price_cents":price,"ends_at":ends})
+                clean_lots.append({"name":name,"price_cents":price,"starts_at":starts,"ends_at":ends})
             for c in coupons:
                 code=str(c["code"]).strip().upper();percent=int(c["percent"]);limit=int(c["max_uses"])
                 if not (3<=len(code)<=32 and code.replace("-","").isalnum() and 1<=percent<=100 and 1<=limit<=100000):raise ValueError()
                 clean_coupons.append({"code":code,"percent":percent,"max_uses":limit})
-            if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["ends_at"] for i in range(len(clean_lots)-1)):raise ValueError()
+            if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["starts_at"] for i in range(len(clean_lots)-1)):raise ValueError()
         except (KeyError,TypeError,ValueError):
             return error("Revise os dados, limites e datas de kits, lotes e cupons")
         r=Race(organizer_id=user.id,kits=clean_kits,lots=clean_lots,coupons=clean_coupons,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
@@ -249,6 +251,60 @@ def create_app():
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
         return jsonify(race_data(r)), 201
+    @app.put("/api/organizer/events/<int:race_id>")
+    @auth("organizer")
+    def update_event(user,race_id):
+        r=db.session.get(Race,race_id)
+        if not r or r.organizer_id!=user.id:return error("Corrida não encontrada",404)
+        if r.publication_status not in ("draft","rejected"):return error("Só é possível editar rascunhos ou eventos devolvidos",409)
+        if db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id==race_id).first():
+            return error("A corrida já possui inscrições",409)
+        data=payload()
+        title=str(data.get("title", "")).strip(); city=str(data.get("city", "")).strip(); date=str(data.get("date",""))
+        distances=data.get("distances", [])
+        try: datetime.strptime(date, "%Y-%m-%d")
+        except ValueError: return error("Data inválida")
+        if not (3<=len(title)<=140 and 2<=len(city)<=120 and isinstance(distances,list) and 1<=len(distances)<=10):
+            return error("Dados do evento incompletos")
+        validated=[]
+        for d in distances:
+            try:
+                label=str(d["label"]).strip()
+                cents=int(d["price_cents"]); capacity=int(d["capacity"])
+                if not (1<=len(label)<=30 and 0<=cents<=10000000 and 1<=capacity<=100000): raise ValueError()
+                validated.append((label,cents,capacity))
+            except (KeyError, TypeError, ValueError): return error("Distância, preço ou vagas inválidos")
+        kits=data.get("kits",[]); lots=data.get("lots",[]); coupons=data.get("coupons",[])
+        if not all(isinstance(v,list) for v in (kits,lots,coupons)) or len(kits)>20 or len(lots)>20 or len(coupons)>50:
+            return error("Limite de kits, lotes ou cupons excedido")
+        try:
+            clean_kits=[];clean_lots=[];clean_coupons=[]
+            for k in kits:
+                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"]); eligible=k.get("distances",[])
+                if not (1<=len(name)<=100 and 0<=price<=10000000 and 0<=stock<=100000):raise ValueError()
+                if not isinstance(eligible,list) or not eligible or any(x not in [d[0] for d in validated] for x in eligible):raise ValueError()
+                clean_kits.append({"name":name,"price_cents":price,"capacity":stock,"distances":eligible})
+            for l in lots:
+                name=str(l["name"]).strip();price=int(l["price_cents"]);starts=str(l["starts_at"]);ends=str(l["ends_at"])
+                datetime.strptime(starts,"%Y-%m-%d");datetime.strptime(ends,"%Y-%m-%d")
+                if starts>ends or ends>date:raise ValueError()
+                if not (1<=len(name)<=80 and 0<=price<=10000000):raise ValueError()
+                clean_lots.append({"name":name,"price_cents":price,"starts_at":starts,"ends_at":ends})
+            for c in coupons:
+                code=str(c["code"]).strip().upper();percent=int(c["percent"]);limit=int(c["max_uses"])
+                if not (3<=len(code)<=32 and code.replace("-","").isalnum() and 1<=percent<=100 and 1<=limit<=100000):raise ValueError()
+                clean_coupons.append({"code":code,"percent":percent,"max_uses":limit})
+            if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["starts_at"] for i in range(len(clean_lots)-1)):raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            return error("Revise os dados, limites e datas de kits, lotes e cupons")
+        r.title=title;r.city=city;r.date=date;r.local_city=city
+        r.regulation_text=str(data.get("regulation_text") or "").strip()[:20000]
+        r.kits=clean_kits;r.lots=clean_lots;r.coupons=clean_coupons
+        r.publication_status="draft";r.published=False
+        Distance.query.filter_by(race_id=r.id).delete(synchronize_session=False)
+        for label,cents,capacity in validated:db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
+        db.session.commit()
+        return jsonify(race_data(r))
     @app.get("/api/organizer/events")
     @auth("organizer")
     def organizer_events(user):
