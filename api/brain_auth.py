@@ -15,6 +15,7 @@ def register_brain(app, main_db=None, User=None):
     db_url=os.getenv("BRAIN_DATABASE_URL","")
     app_secret=os.getenv("BRAIN_SESSION_SECRET","")
     enrollment_key=os.getenv("BRAIN_ENROLLMENT_KEY","")
+    enrollment_deadline=float(os.getenv("BRAIN_ENROLLMENT_DEADLINE","0"))
     fernet_key=os.getenv("BRAIN_FERNET_KEY","")
     if not db_url or not app_secret:
         app.logger.warning("Arena Brain API disabled: BRAIN_DATABASE_URL or BRAIN_SESSION_SECRET unset")
@@ -57,7 +58,7 @@ def register_brain(app, main_db=None, User=None):
         # Only initial enrollment; an authenticated email is NOT enough.
         d=request.get_json(silent=True) or {}
         supplied=str(d.get("enrollment_key",""))
-        if not enrollment_key or not cipher or not hmac.compare_digest(supplied,enrollment_key):
+        if time.time()>enrollment_deadline or not enrollment_key or not cipher or not hmac.compare_digest(supplied,enrollment_key):
             return jsonify(error="Credencial de ativação inválida"),403
         email=str(d.get("email","")).strip().lower()
         password=str(d.get("password",""))
@@ -70,7 +71,7 @@ def register_brain(app, main_db=None, User=None):
     @app.post("/api/brain/setup/confirm")
     def brain_setup_confirm():
         d=request.get_json(silent=True) or {}
-        if not enrollment_key or not cipher or not hmac.compare_digest(str(d.get("enrollment_key","")),enrollment_key):
+        if time.time()>enrollment_deadline or not enrollment_key or not cipher or not hmac.compare_digest(str(d.get("enrollment_key","")),enrollment_key):
             return jsonify(error="Credencial de ativação inválida"),403
         email=str(d.get("email","")).strip().lower()
         row=query("SELECT id,status,mfa_pending_secret FROM admin_accounts WHERE email=%s",(email,),one=True)
