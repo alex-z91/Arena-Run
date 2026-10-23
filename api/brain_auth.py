@@ -85,8 +85,8 @@ def register_brain(app, main_db=None, User=None):
         name=str(d.get("name","")).strip()
         email=str(d.get("email","")).strip().lower()
         password=str(d.get("temporary_password",""))
-        if not 3<=len(name)<=100 or len(email)>180 or "@" not in email or not 12<=len(password)<=128:
-            return jsonify(error="Informe nome, e-mail e senha provisória de pelo menos 12 caracteres"),400
+        if not 3<=len(name)<=100 or len(email)>180 or "@" not in email or not 6<=len(password)<=128:
+            return jsonify(error="Informe nome, e-mail e senha provisória de pelo menos 6 caracteres"),400
         if User.query.filter_by(email=email).first():
             return jsonify(error="E-mail já cadastrado"),409
         organizer=User(name=name,email=email,password_hash=generate_password_hash(password),role="organizer",approved=True,must_change_password=True,auth_version=0)
