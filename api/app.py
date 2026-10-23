@@ -4,7 +4,9 @@ import re
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response, abort
+from botocore.exceptions import ClientError
+import boto3
 from flask_sqlalchemy import SQLAlchemy
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -39,6 +41,7 @@ class Race(db.Model):
     publication_status = db.Column(db.String(24), nullable=True)
     local_city = db.Column(db.String(120), nullable=True)
     regulation_text = db.Column(db.Text, nullable=True)
+    card_object_key = db.Column(db.String(250), nullable=True)
     kits = db.Column(db.JSON, nullable=False, default=list)
     lots = db.Column(db.JSON, nullable=False, default=list)
     coupons = db.Column(db.JSON, nullable=False, default=list)
@@ -126,7 +129,7 @@ def create_app():
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r, include_coupons=False):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "kits":r.kits or [], "lots":r.lots or [], "coupons":(r.coupons or []) if include_coupons else [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "card_url": ("/api/events/"+str(r.id)+"/card") if r.card_object_key else None, "kits":r.kits or [], "lots":r.lots or [], "coupons":(r.coupons or []) if include_coupons else [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_integration": "not_configured"}
@@ -305,6 +308,41 @@ def create_app():
         for label,cents,capacity in validated:db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
         return jsonify(race_data(r, True))
+    def media_client():
+        endpoint=os.environ.get("ARENA_MEDIA_ENDPOINT")
+        key=os.environ.get("ARENA_MEDIA_ACCESS_KEY")
+        secret=os.environ.get("ARENA_MEDIA_SECRET_KEY")
+        if not all((endpoint,key,secret)):raise RuntimeError("Armazenamento de mídia indisponível")
+        return boto3.client("s3",endpoint_url=endpoint,aws_access_key_id=key,aws_secret_access_key=secret,region_name="us-east-2")
+    @app.post("/api/organizer/events/<int:race_id>/card")
+    @auth("organizer")
+    def upload_race_card(user,race_id):
+        r=db.session.get(Race,race_id)
+        if not r or r.organizer_id!=user.id:return error("Corrida não encontrada",404)
+        if r.publication_status not in ("draft","rejected"):return error("Não é possível alterar imagem nesta etapa",409)
+        file=request.files.get("file")
+        if not file or file.mimetype!="image/webp":return error("Envie imagem WebP",400)
+        data=file.read(220001)
+        if len(data)>220000 or len(data)<20 or data[:4]!=b"RIFF" or data[8:12]!=b"WEBP":return error("Card inválido ou maior que 220 KB",400)
+        key="races/"+str(r.id)+"/card-"+secrets.token_hex(10)+".webp"
+        try:media_client().put_object(Bucket=os.environ.get("ARENA_MEDIA_BUCKET","arena-race-media"),Key=key,Body=data,ContentType="image/webp",CacheControl="public,max-age=86400")
+        except Exception:
+            app.logger.exception("Falha de upload de card")
+            return error("Falha ao salvar a imagem no armazenamento",503)
+        old=r.card_object_key
+        r.card_object_key=key
+        db.session.commit()
+        if old:
+            try:media_client().delete_object(Bucket=os.environ.get("ARENA_MEDIA_BUCKET","arena-race-media"),Key=old)
+            except Exception:app.logger.warning("Falha ao remover imagem antiga de %s",r.id)
+        return {"card_url":"/api/events/"+str(r.id)+"/card"}
+    @app.get("/api/events/<int:race_id>/card")
+    def public_race_card(race_id):
+        r=db.session.get(Race,race_id)
+        if not r or not r.published or not r.card_object_key:abort(404)
+        try:obj=media_client().get_object(Bucket=os.environ.get("ARENA_MEDIA_BUCKET","arena-race-media"),Key=r.card_object_key)
+        except Exception:abort(404)
+        return Response(obj["Body"].read(),mimetype="image/webp",headers={"Cache-Control":"public, max-age=600"})
     @app.get("/api/organizer/events")
     @auth("organizer")
     def organizer_events(user):
