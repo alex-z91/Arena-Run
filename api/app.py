@@ -126,7 +126,7 @@ def create_app():
         return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "payment_mode": "simulated"}
+        return {"status": "ok", "payment_integration": "not_configured"}
     @app.post("/api/auth/register")
     def register():
         data = payload()
@@ -278,7 +278,7 @@ def create_app():
         locality="local" if user.city.strip().casefold()==(race.local_city or race.city).strip().casefold() else "general"
         reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team,regulation_accepted_at=datetime.now(timezone.utc))
         db.session.add(reg); db.session.commit()
-        return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"simulated","price_cents":d.price_cents}),201
+        return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"pending_integration","price_cents":d.price_cents}),201
     @app.get("/api/registrations/me")
     @auth()
     def my_registrations(user):
@@ -306,24 +306,8 @@ def create_app():
         if not target or target.role!="organizer": return error("Organizador não encontrado",404)
         target.approved=True; db.session.commit()
         return {"user":user_data(target)}
-    # Simula aprovação por uma conta master autenticada. NÃO recebe notificações reais.
-    @app.post("/api/demo/registrations/<int:reg_id>/confirm")
-    @auth("master")
-    def simulate_paid(user,reg_id):
-        if os.environ.get("ENABLE_DEMO_PAYMENT")!="1": return error("Simulação desabilitada",403)
-        r=db.session.get(Registration,reg_id)
-        if not r: return error("Inscrição não encontrada",404)
-        if r.status!="awaiting_payment": return error("Transição de status não permitida",409)
-        r.status="paid_simulated";db.session.commit()
-        return {"id":r.id,"status":r.status}
     with app.app_context():
         db.create_all()
-        bootstrap_email=os.environ.get("BOOTSTRAP_MASTER_EMAIL", "").strip().lower()
-        bootstrap_password=os.environ.get("BOOTSTRAP_MASTER_PASSWORD", "")
-        if bootstrap_email and bootstrap_password and len(bootstrap_password)>=12:
-            if not User.query.filter_by(email=bootstrap_email).first():
-                db.session.add(User(name="Master Arena Run",email=bootstrap_email,password_hash=generate_password_hash(bootstrap_password),role="master",approved=True))
-                db.session.commit()
     from brain_auth import register_brain
     register_brain(app, db, User)
     return app
