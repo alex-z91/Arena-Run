@@ -53,32 +53,6 @@ def register_brain(app, main_db=None, User=None):
                 return jsonify(error="Acesso negado"),403
             return fn(u,*args,**kwargs)
         return wrapped
-    @app.post("/api/brain/setup")
-    def brain_setup():
-        # Only initial enrollment; an authenticated email is NOT enough.
-        d=request.get_json(silent=True) or {}
-        supplied=str(d.get("enrollment_key",""))
-        if time.time()>enrollment_deadline or not enrollment_key or not cipher or not hmac.compare_digest(supplied,enrollment_key):
-            return jsonify(error="Credencial de ativação inválida"),403
-        email=str(d.get("email","")).strip().lower()
-        password=str(d.get("password",""))
-        if len(password)<14 or len(password)>128:return jsonify(error="Senha deve ter entre 14 e 128 caracteres"),400
-        row=query("SELECT id,status FROM admin_accounts WHERE email=%s",(email,),one=True)
-        if not row or row["status"]!="pending_setup":return jsonify(error="Conta indisponível para ativação"),409
-        secret=base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
-        query("UPDATE admin_accounts SET password_hash=%s,mfa_pending_secret=%s WHERE id=%s AND status='pending_setup'",(generate_password_hash(password),cipher.encrypt(secret.encode()).decode(),row["id"]))
-        return jsonify(secret=secret,otpauth_uri=f"otpauth://totp/Arena%20Brain:{email}?secret={secret}&issuer=Arena%20Brain")
-    @app.post("/api/brain/setup/confirm")
-    def brain_setup_confirm():
-        d=request.get_json(silent=True) or {}
-        if time.time()>enrollment_deadline or not enrollment_key or not cipher or not hmac.compare_digest(str(d.get("enrollment_key","")),enrollment_key):
-            return jsonify(error="Credencial de ativação inválida"),403
-        email=str(d.get("email","")).strip().lower()
-        row=query("SELECT id,status,mfa_pending_secret FROM admin_accounts WHERE email=%s",(email,),one=True)
-        if not row or row["status"]!="pending_setup" or not row["mfa_pending_secret"]:return jsonify(error="Ativação não iniciada"),409
-        if otp_step(cipher.decrypt(row["mfa_pending_secret"].encode()).decode(),str(d.get("otp",""))) is None:return jsonify(error="Código inválido"),401
-        query("UPDATE admin_accounts SET mfa_secret_encrypted=%s,mfa_pending_secret=NULL,mfa_enabled=TRUE,status='active',activated_at=NOW(),session_epoch=session_epoch+1 WHERE id=%s AND status='pending_setup'",(row["mfa_pending_secret"],row["id"]))
-        return jsonify(ok=True)
     @app.post("/api/brain/login")
     def brain_login():
         d=request.get_json(silent=True) or {}
