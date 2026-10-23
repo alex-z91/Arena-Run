@@ -265,7 +265,7 @@ def create_app():
                 db.session.add(User(name="Master Arena Run",email=bootstrap_email,password_hash=generate_password_hash(bootstrap_password),role="master",approved=True))
                 db.session.commit()
     from brain_auth import register_brain
-    register_brain(app)
+    register_brain(app, db, User)
     return app
 
 if __name__=="__main__":
