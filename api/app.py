@@ -39,6 +39,9 @@ class Race(db.Model):
     publication_status = db.Column(db.String(24), nullable=True)
     local_city = db.Column(db.String(120), nullable=True)
     regulation_text = db.Column(db.Text, nullable=True)
+    kits = db.Column(db.JSON, nullable=False, default=list)
+    lots = db.Column(db.JSON, nullable=False, default=list)
+    coupons = db.Column(db.JSON, nullable=False, default=list)
 
 class Distance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -123,7 +126,7 @@ def create_app():
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "kits":r.kits or [], "lots":r.lots or [], "coupons":r.coupons or [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_integration": "not_configured"}
@@ -220,7 +223,28 @@ def create_app():
                 if not (1<=len(label)<=30 and 0<=cents<=10000000 and 1<=capacity<=100000): raise ValueError()
                 validated.append((label,cents,capacity))
             except (KeyError, TypeError, ValueError): return error("Distância, preço ou vagas inválidos")
-        r=Race(organizer_id=user.id,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
+        kits=data.get("kits",[]); lots=data.get("lots",[]); coupons=data.get("coupons",[])
+        if not all(isinstance(v,list) for v in (kits,lots,coupons)) or len(kits)>20 or len(lots)>20 or len(coupons)>50:
+            return error("Limite de kits, lotes ou cupons excedido")
+        try:
+            clean_kits=[];clean_lots=[];clean_coupons=[]
+            for k in kits:
+                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"])
+                if not (1<=len(name)<=100 and 0<=price<=10000000 and 0<=stock<=100000):raise ValueError()
+                clean_kits.append({"name":name,"price_cents":price,"capacity":stock})
+            for l in lots:
+                name=str(l["name"]).strip();price=int(l["price_cents"]);ends=str(l["ends_at"])
+                datetime.strptime(ends,"%Y-%m-%d")
+                if not (1<=len(name)<=80 and 0<=price<=10000000):raise ValueError()
+                clean_lots.append({"name":name,"price_cents":price,"ends_at":ends})
+            for c in coupons:
+                code=str(c["code"]).strip().upper();percent=int(c["percent"]);limit=int(c["max_uses"])
+                if not (3<=len(code)<=32 and code.replace("-","").isalnum() and 1<=percent<=100 and 1<=limit<=100000):raise ValueError()
+                clean_coupons.append({"code":code,"percent":percent,"max_uses":limit})
+            if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["ends_at"] for i in range(len(clean_lots)-1)):raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            return error("Revise os dados, limites e datas de kits, lotes e cupons")
+        r=Race(organizer_id=user.id,kits=clean_kits,lots=clean_lots,coupons=clean_coupons,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
         db.session.add(r); db.session.flush()
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
