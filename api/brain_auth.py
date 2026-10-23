@@ -12,7 +12,7 @@ from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy.exc import OperationalError
 
-def register_brain(app, main_db=None, User=None):
+def register_brain(app, main_db=None, User=None, Race=None, Distance=None):
     db_url=os.getenv("BRAIN_DATABASE_URL","")
     app_secret=os.getenv("BRAIN_SESSION_SECRET","")
     enrollment_key=os.getenv("BRAIN_ENROLLMENT_KEY","")
@@ -132,6 +132,30 @@ def register_brain(app, main_db=None, User=None):
             main_db.session.rollback()
             app.logger.exception("Failed to approve organizer or write audit")
             return jsonify(error="Falha de aprovação; consulte auditoria"),500
+    @app.get("/api/brain/events")
+    @admin_required
+    def brain_event_list(admin):
+        if main_db is None or Race is None:return jsonify(error="Módulo de eventos indisponível"),503
+        rows=main_db.session.query(Race,User).join(User,Race.organizer_id==User.id).order_by(Race.id.desc()).limit(200).all()
+        return {"events":[{"id":r.id,"title":r.title,"city":r.city,"date":r.date,"organizer":u.name,"status":r.publication_status or ("published" if r.published else "draft"),"has_card":bool(r.card_object_key)} for r,u in rows]}
+    @app.post("/api/brain/events/<int:event_id>/approve")
+    @admin_required
+    def brain_event_approve(admin,event_id):
+        if main_db is None or Race is None or Distance is None:return jsonify(error="Módulo de eventos indisponível"),503
+        race=main_db.session.get(Race,event_id)
+        if not race:return jsonify(error="Corrida não encontrada"),404
+        if race.publication_status!="submitted":return jsonify(error="Corrida não está aguardando aprovação"),409
+        if not race.regulation_text or not main_db.session.query(Distance.id).filter_by(race_id=event_id).first():
+            return jsonify(error="Distâncias e regulamento obrigatórios"),400
+        race.publication_status="published"
+        race.published=True
+        try:main_db.session.commit()
+        except Exception:
+            main_db.session.rollback()
+            return jsonify(error="Não foi possível publicar a corrida"),503
+        try:query("INSERT INTO brain_audit_events (admin_id,action,target_type,target_id) VALUES (%s,%s,%s,%s)",(admin["id"],"race.publish","race",race.id))
+        except Exception:app.logger.exception("Falha ao registrar auditoria da publicação da corrida %s",race.id)
+        return {"ok":True,"id":race.id,"status":"published"}
     @app.get("/api/brain/overview")
     @admin_required
     def brain_overview(admin):
