@@ -1,5 +1,6 @@
 import os
 import secrets
+import re
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -182,7 +183,7 @@ def create_app():
         current=str(body.get("current_password",""))
         new=str(body.get("new_password",""))
         if not check_password_hash(u.password_hash,current):return error("Senha provisória inválida",401)
-        if not 12<=len(new)<=128 or new==current:return error("Informe uma senha nova com pelo menos 12 caracteres",400)
+        if not (8<=len(new)<=128 and re.search(r"[A-Za-z]",new) and re.search(r"[0-9]",new) and re.search(r"[^A-Za-z0-9]",new)) or new==current:return error("A nova senha deve ter ao menos 8 caracteres, incluindo letra, número e caractere especial",400)
         u.password_hash=generate_password_hash(new)
         u.must_change_password=False
         u.auth_version+=1
