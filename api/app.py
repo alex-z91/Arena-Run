@@ -62,6 +62,7 @@ def create_app():
     app = Flask(__name__, static_folder="../", static_url_path="/arena-run")
     app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get("DATABASE_URL", "sqlite:///arena_run_dev.db").replace("postgres://", "postgresql://", 1)
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"pool_pre_ping": True, "pool_recycle": 120, "pool_size": 3, "max_overflow": 2, "pool_timeout": 15}
     secret = os.environ.get("SECRET_KEY")
     if not secret and os.environ.get("APP_ENV") != "development":
         raise RuntimeError("Configure SECRET_KEY e APP_ENV antes de iniciar")
