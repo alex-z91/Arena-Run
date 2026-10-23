@@ -11,7 +11,7 @@ from flask import request, jsonify
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
 
-def register_brain(app):
+def register_brain(app, main_db=None, User=None):
     db_url=os.getenv("BRAIN_DATABASE_URL","")
     app_secret=os.getenv("BRAIN_SESSION_SECRET","")
     enrollment_key=os.getenv("BRAIN_ENROLLMENT_KEY","")
@@ -101,6 +101,29 @@ def register_brain(app):
     def brain_logout(admin):
         query("UPDATE admin_accounts SET session_epoch=session_epoch+1 WHERE id=%s",(admin["id"],))
         return {"ok":True}
+    @app.get("/api/brain/organizers")
+    @admin_required
+    def brain_organizers(admin):
+        if main_db is None or User is None: return jsonify(error="Serviço de organizadores indisponível"),503
+        users=User.query.filter_by(role="organizer").order_by(User.id.desc()).limit(250).all()
+        return {"organizers":[{"id":u.id,"name":u.name,"email":u.email,"approved":u.approved} for u in users]}
+    @app.post("/api/brain/organizers/<int:organizer_id>/approve")
+    @admin_required
+    def brain_organizer_approve(admin,organizer_id):
+        if main_db is None or User is None: return jsonify(error="Serviço indisponível"),503
+        u=main_db.session.get(User,organizer_id)
+        if not u or u.role!="organizer":return jsonify(error="Organizador não encontrado"),404
+        if u.approved:return {"ok":True}
+        try:
+            u.approved=True
+            main_db.session.commit()
+            query("INSERT INTO brain_audit_events (admin_id,action,target_type,target_id) VALUES (%s,%s,%s,%s)",
+                  (admin["id"],"organizer.approve","organizer",organizer_id))
+            return {"ok":True}
+        except Exception:
+            main_db.session.rollback()
+            app.logger.exception("Failed to approve organizer or write audit")
+            return jsonify(error="Falha de aprovação; consulte auditoria"),500
     @app.get("/api/brain/overview")
     @admin_required
     def brain_overview(admin):
