@@ -76,12 +76,35 @@ def register_brain(app, main_db=None, User=None):
     def brain_logout(admin):
         query("UPDATE admin_accounts SET session_epoch=session_epoch+1 WHERE id=%s",(admin["id"],))
         return {"ok":True}
+    @app.post("/api/brain/organizers")
+    @admin_required
+    def brain_create_organizer(admin):
+        if main_db is None or User is None:return jsonify(error="Serviço indisponível"),503
+        d=request.get_json(silent=True) or {}
+        name=str(d.get("name","")).strip()
+        email=str(d.get("email","")).strip().lower()
+        password=str(d.get("temporary_password",""))
+        if not 3<=len(name)<=100 or len(email)>180 or "@" not in email or not 12<=len(password)<=128:
+            return jsonify(error="Informe nome, e-mail e senha provisória de pelo menos 12 caracteres"),400
+        if User.query.filter_by(email=email).first():
+            return jsonify(error="E-mail já cadastrado"),409
+        organizer=User(name=name,email=email,password_hash=generate_password_hash(password),role="organizer",approved=True,must_change_password=True,auth_version=0)
+        try:
+            main_db.session.add(organizer)
+            main_db.session.flush()
+            query("INSERT INTO brain_audit_events (admin_id,action,target_type,target_id) VALUES (%s,%s,%s,%s)",(admin["id"],"organizer.create","organizer",organizer.id))
+            main_db.session.commit()
+        except Exception:
+            main_db.session.rollback()
+            app.logger.exception("Organizer provisioning failed")
+            return jsonify(error="Não foi possível criar o organizador"),500
+        return jsonify(id=organizer.id,name=name,email=email,must_change_password=True),201
     @app.get("/api/brain/organizers")
     @admin_required
     def brain_organizers(admin):
         if main_db is None or User is None: return jsonify(error="Serviço de organizadores indisponível"),503
         users=User.query.filter_by(role="organizer").order_by(User.id.desc()).limit(250).all()
-        return {"organizers":[{"id":u.id,"name":u.name,"email":u.email,"approved":u.approved} for u in users]}
+        return {"organizers":[{"id":u.id,"name":u.name,"email":u.email,"approved":u.approved,"must_change_password":u.must_change_password} for u in users]}
     @app.post("/api/brain/organizers/<int:organizer_id>/approve")
     @admin_required
     def brain_organizer_approve(admin,organizer_id):
