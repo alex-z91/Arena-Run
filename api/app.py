@@ -264,6 +264,8 @@ def create_app():
             if not User.query.filter_by(email=bootstrap_email).first():
                 db.session.add(User(name="Master Arena Run",email=bootstrap_email,password_hash=generate_password_hash(bootstrap_password),role="master",approved=True))
                 db.session.commit()
+    from brain_auth import register_brain
+    register_brain(app)
     return app
 
 if __name__=="__main__":
