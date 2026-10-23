@@ -36,6 +36,7 @@ class Race(db.Model):
     city = db.Column(db.String(120), nullable=False)
     date = db.Column(db.String(10), nullable=False)
     published = db.Column(db.Boolean, nullable=False, default=False)
+    publication_status = db.Column(db.String(24), nullable=True)
     local_city = db.Column(db.String(120), nullable=True)
     regulation_text = db.Column(db.Text, nullable=True)
 
@@ -122,7 +123,7 @@ def create_app():
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "regulation_text":r.regulation_text, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_mode": "simulated"}
@@ -219,11 +220,36 @@ def create_app():
                 if not (1<=len(label)<=30 and 0<=cents<=10000000 and 1<=capacity<=100000): raise ValueError()
                 validated.append((label,cents,capacity))
             except (KeyError, TypeError, ValueError): return error("Distância, preço ou vagas inválidos")
-        r=Race(organizer_id=user.id,title=title,city=city,date=date,published=True,local_city=str(data.get("local_city") or city).strip()[:120])
+        r=Race(organizer_id=user.id,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
         db.session.add(r); db.session.flush()
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
         return jsonify(race_data(r)), 201
+    @app.get("/api/organizer/events")
+    @auth("organizer")
+    def organizer_events(user):
+        races=Race.query.filter_by(organizer_id=user.id).order_by(Race.id.desc()).all()
+        return {"events":[race_data(r) for r in races]}
+    @app.get("/api/organizer/overview")
+    @auth("organizer")
+    def organizer_overview(user):
+        races=Race.query.filter_by(organizer_id=user.id).all()
+        ids=[r.id for r in races]
+        counts={"total_events":len(races),"drafts":sum((r.publication_status or "draft")=="draft" for r in races),"pending_review":sum(r.publication_status=="submitted" for r in races),"published":sum(r.published for r in races),"registrations":0}
+        if ids:
+            counts["registrations"]=db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id.in_(ids)).count()
+        return counts
+    @app.post("/api/organizer/events/<int:race_id>/submit")
+    @auth("organizer")
+    def organizer_submit(user,race_id):
+        r=db.session.get(Race,race_id)
+        if not r or r.organizer_id!=user.id:return error("Corrida não encontrada",404)
+        if r.publication_status not in ("draft","rejected"):return error("Estado não permite envio",409)
+        if not r.regulation_text or not Distance.query.filter_by(race_id=r.id).first():return error("Configure distâncias e regulamento antes do envio",400)
+        r.publication_status="submitted"
+        r.published=False
+        db.session.commit()
+        return race_data(r)
     @app.post("/api/registrations")
     @auth("runner", "organizer", "master")
     def create_registration(user):
