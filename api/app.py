@@ -434,7 +434,7 @@ def create_app():
     with app.app_context():
         db.create_all()
     from brain_auth import register_brain
-    register_brain(app, db, User)
+    register_brain(app, db, User, Race, Distance)
     return app
 
 if __name__=="__main__":
