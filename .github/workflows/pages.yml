@@ -27,6 +27,7 @@ jobs:
           cp inscricao.html _site/inscricao.html
           cp login.html _site/login.html
           cp painel.html _site/painel.html
+          cp organizador.html _site/organizador.html
           cp config.js _site/config.js
           cp CNAME _site/CNAME
           touch _site/.nojekyll
