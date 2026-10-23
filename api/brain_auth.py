@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from flask import request, jsonify
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy.exc import OperationalError
 
 def register_brain(app, main_db=None, User=None):
     db_url=os.getenv("BRAIN_DATABASE_URL","")
@@ -103,7 +104,16 @@ def register_brain(app, main_db=None, User=None):
     @admin_required
     def brain_organizers(admin):
         if main_db is None or User is None: return jsonify(error="Serviço de organizadores indisponível"),503
-        users=User.query.filter_by(role="organizer").order_by(User.id.desc()).limit(250).all()
+        try:
+            users=User.query.filter_by(role="organizer").order_by(User.id.desc()).limit(250).all()
+        except OperationalError:
+            main_db.session.rollback()
+            main_db.engine.dispose()
+            try:
+                users=User.query.filter_by(role="organizer").order_by(User.id.desc()).limit(250).all()
+            except OperationalError:
+                main_db.session.rollback()
+                return jsonify(error="Banco temporariamente indisponível. Tente novamente."),503
         return {"organizers":[{"id":u.id,"name":u.name,"email":u.email,"approved":u.approved,"must_change_password":u.must_change_password} for u in users]}
     @app.post("/api/brain/organizers/<int:organizer_id>/approve")
     @admin_required
