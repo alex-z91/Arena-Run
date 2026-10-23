@@ -25,6 +25,8 @@ class User(db.Model):
     shirt_size = db.Column(db.String(3), nullable=True)
     role = db.Column(db.String(24), nullable=False, default="runner")
     approved = db.Column(db.Boolean, nullable=False, default=False)
+    must_change_password = db.Column(db.Boolean, nullable=False, default=False)
+    auth_version = db.Column(db.Integer, nullable=False, default=0)
 
 class Race(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -96,7 +98,14 @@ def create_app():
                     user_id = signer.loads(header[7:], max_age=60*60*12)
                 except (BadSignature, SignatureExpired):
                     return error("Sessão inválida ou expirada", 401)
+                session_data=user_id
+                user_id=session_data.get("uid") if isinstance(session_data,dict) else session_data
                 user = db.session.get(User, user_id)
+                if user and user.role=="organizer":
+                    if not isinstance(session_data,dict) or session_data.get("version")!=user.auth_version:
+                        return error("Sessão expirada",401)
+                    if user.must_change_password:
+                        return error("Troque sua senha provisória antes de continuar",403)
                 if not user or (roles and user.role not in roles):
                     return error("Sem permissão", 403)
                 if user.role == "organizer" and not user.approved:
@@ -130,6 +139,7 @@ def create_app():
         gender = str(data.get("gender","")).strip()
         team = str(data.get("team","")).strip()
         shirt = str(data.get("shirt_size","")).strip()
+        if role!="runner": return error("O cadastro de organizadores é exclusivo do administrador",403)
         if role=="runner":
             try:
                 parsed=datetime.strptime(birth,"%Y-%m-%d").date()
@@ -154,7 +164,29 @@ def create_app():
         u=User.query.filter_by(email=str(data.get("email", "")).strip().lower()).first()
         if not u or not check_password_hash(u.password_hash, str(data.get("password", ""))):
             return error("Credenciais inválidas", 401)
-        return {"user": user_data(u), "token": signer.dumps(u.id)}
+        return {"user": user_data(u), "token": signer.dumps({"uid":u.id,"version":u.auth_version}) if u.role=="organizer" else signer.dumps(u.id),"must_change_password":bool(u.must_change_password)}
+    @app.post("/api/auth/change-temporary-password")
+    def organizer_change_password():
+        header=request.headers.get("Authorization","")
+        if not header.startswith("Bearer "): return error("Autenticação obrigatória",401)
+        try:
+            data=signer.loads(header[7:],max_age=60*60)
+        except (BadSignature,SignatureExpired):
+            return error("Sessão expirada",401)
+        if not isinstance(data,dict): return error("Sessão inválida",401)
+        u=db.session.get(User,data.get("uid"))
+        if not u or u.role!="organizer" or data.get("version")!=u.auth_version or not u.must_change_password:
+            return error("Troca de senha indisponível",403)
+        body=payload()
+        current=str(body.get("current_password",""))
+        new=str(body.get("new_password",""))
+        if not check_password_hash(u.password_hash,current):return error("Senha provisória inválida",401)
+        if not 12<=len(new)<=128 or new==current:return error("Informe uma senha nova com pelo menos 12 caracteres",400)
+        u.password_hash=generate_password_hash(new)
+        u.must_change_password=False
+        u.auth_version+=1
+        db.session.commit()
+        return {"ok":True,"token":signer.dumps({"uid":u.id,"version":u.auth_version})}
     @app.get("/api/me")
     @auth()
     def me(user):
