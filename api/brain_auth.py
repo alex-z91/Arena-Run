@@ -5,6 +5,7 @@ import os, time, hmac, hashlib, base64, struct, secrets
 from datetime import datetime, timezone, timedelta
 from functools import wraps
 import psycopg
+from cryptography.fernet import Fernet
 from psycopg.rows import dict_row
 from flask import request, jsonify
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -14,9 +15,11 @@ def register_brain(app):
     db_url=os.getenv("BRAIN_DATABASE_URL","")
     app_secret=os.getenv("BRAIN_SESSION_SECRET","")
     enrollment_key=os.getenv("BRAIN_ENROLLMENT_KEY","")
+    fernet_key=os.getenv("BRAIN_FERNET_KEY","")
     if not db_url or not app_secret:
         app.logger.warning("Arena Brain API disabled: BRAIN_DATABASE_URL or BRAIN_SESSION_SECRET unset")
         return
+    cipher=Fernet(fernet_key.encode()) if fernet_key else None
     signer=URLSafeTimedSerializer(app_secret,salt="arena-brain-admin-v1")
     def query(sql,params=(),one=False):
         with psycopg.connect(db_url,autocommit=False,row_factory=dict_row) as conn:
@@ -54,7 +57,7 @@ def register_brain(app):
         # Only initial enrollment; an authenticated email is NOT enough.
         d=request.get_json(silent=True) or {}
         supplied=str(d.get("enrollment_key",""))
-        if not enrollment_key or not hmac.compare_digest(supplied,enrollment_key):
+        if not enrollment_key or not cipher or not hmac.compare_digest(supplied,enrollment_key):
             return jsonify(error="Credencial de ativação inválida"),403
         email=str(d.get("email","")).strip().lower()
         password=str(d.get("password",""))
@@ -62,17 +65,17 @@ def register_brain(app):
         row=query("SELECT id,status FROM admin_accounts WHERE email=%s",(email,),one=True)
         if not row or row["status"]!="pending_setup":return jsonify(error="Conta indisponível para ativação"),409
         secret=base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
-        query("UPDATE admin_accounts SET password_hash=%s,mfa_pending_secret=%s WHERE id=%s AND status='pending_setup'",(generate_password_hash(password),secret,row["id"]))
+        query("UPDATE admin_accounts SET password_hash=%s,mfa_pending_secret=%s WHERE id=%s AND status='pending_setup'",(generate_password_hash(password),cipher.encrypt(secret.encode()).decode(),row["id"]))
         return jsonify(secret=secret,otpauth_uri=f"otpauth://totp/Arena%20Brain:{email}?secret={secret}&issuer=Arena%20Brain")
     @app.post("/api/brain/setup/confirm")
     def brain_setup_confirm():
         d=request.get_json(silent=True) or {}
-        if not enrollment_key or not hmac.compare_digest(str(d.get("enrollment_key","")),enrollment_key):
+        if not enrollment_key or not cipher or not hmac.compare_digest(str(d.get("enrollment_key","")),enrollment_key):
             return jsonify(error="Credencial de ativação inválida"),403
         email=str(d.get("email","")).strip().lower()
         row=query("SELECT id,status,mfa_pending_secret FROM admin_accounts WHERE email=%s",(email,),one=True)
         if not row or row["status"]!="pending_setup" or not row["mfa_pending_secret"]:return jsonify(error="Ativação não iniciada"),409
-        if otp_step(row["mfa_pending_secret"],str(d.get("otp",""))) is None:return jsonify(error="Código inválido"),401
+        if otp_step(cipher.decrypt(row["mfa_pending_secret"].encode()).decode(),str(d.get("otp",""))) is None:return jsonify(error="Código inválido"),401
         query("UPDATE admin_accounts SET mfa_secret_encrypted=%s,mfa_pending_secret=NULL,mfa_enabled=TRUE,status='active',activated_at=NOW(),session_epoch=session_epoch+1 WHERE id=%s AND status='pending_setup'",(row["mfa_pending_secret"],row["id"]))
         return jsonify(ok=True)
     @app.post("/api/brain/login")
@@ -83,7 +86,7 @@ def register_brain(app):
         if not row:return jsonify(error="Credenciais inválidas"),401
         if row["locked_until"] and row["locked_until"].replace(tzinfo=timezone.utc)>datetime.now(timezone.utc):return jsonify(error="Acesso temporariamente bloqueado"),429
         valid=row["status"]=="active" and row["mfa_enabled"] and row["password_hash"] and check_password_hash(row["password_hash"],str(d.get("password","")))
-        step=otp_step(row["mfa_secret_encrypted"],str(d.get("otp",""))) if valid else None
+        step=otp_step(cipher.decrypt(row["mfa_secret_encrypted"].encode()).decode(),str(d.get("otp",""))) if valid and cipher else None
         if step is None or (row["last_totp_step"] is not None and step<=row["last_totp_step"]):
             query("UPDATE admin_accounts SET failed_attempts=CASE WHEN failed_attempts>=4 THEN 0 ELSE failed_attempts+1 END,locked_until=CASE WHEN failed_attempts>=4 THEN NOW()+INTERVAL '15 minutes' ELSE locked_until END WHERE id=%s",(row["id"],))
             return jsonify(error="Credenciais ou código inválidos"),401
