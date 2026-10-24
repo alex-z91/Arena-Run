@@ -44,6 +44,8 @@ class Race(db.Model):
     kits = db.Column(db.JSON, nullable=False, default=list)
     lots = db.Column(db.JSON, nullable=False, default=list)
     coupons = db.Column(db.JSON, nullable=False, default=list)
+    categories = db.Column(db.JSON, nullable=False, default=list)
+    age_brackets = db.Column(db.JSON, nullable=False, default=list)
 
 class Distance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -128,7 +130,7 @@ def create_app():
     def user_data(u):
         return {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "approved": u.approved, "birth_date":u.birth_date,"city":u.city,"contact":u.contact,"gender":u.gender,"team":u.team,"shirt_size":u.shirt_size}
     def race_data(r, include_coupons=False):
-        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "card_url": ("/api/events/"+str(r.id)+"/card") if r.card_object_key else None, "kits":r.kits or [], "lots":r.lots or [], "coupons":(r.coupons or []) if include_coupons else [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
+        return {"id": r.id, "title": r.title, "city": r.city, "date": r.date, "local_city":r.local_city, "publication_status":r.publication_status or ("published" if r.published else "draft"), "regulation_text":r.regulation_text, "card_url": ("/api/events/"+str(r.id)+"/card") if r.card_object_key else None, "kits":r.kits or [], "lots":r.lots or [], "coupons":(r.coupons or []) if include_coupons else [], "categories":r.categories or [], "age_brackets":r.age_brackets or [], "distances": [{"id": d.id, "label": d.label, "price_cents": d.price_cents, "capacity": d.capacity} for d in Distance.query.filter_by(race_id=r.id).order_by(Distance.id)]}
     @app.get("/api/health")
     def health():
         return {"status": "ok", "payment_integration": "not_configured"}
@@ -248,7 +250,26 @@ def create_app():
             if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["starts_at"] for i in range(len(clean_lots)-1)):raise ValueError()
         except (KeyError,TypeError,ValueError):
             return error("Revise os dados, limites e datas de kits, lotes e cupons")
-        r=Race(organizer_id=user.id,kits=clean_kits,lots=clean_lots,coupons=clean_coupons,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
+        try:
+            categories=data.get("categories",[])
+            ages=data.get("age_brackets",[])
+            if not isinstance(categories,list) or not isinstance(ages,list) or len(categories)>20 or len(ages)>30:raise ValueError()
+            clean_categories=[]
+            for c in categories:
+                name=str(c["name"]).strip()
+                kind=str(c["kind"]).strip().lower()
+                if not (1<=len(name)<=80 and kind in ("general","local","pcd","custom")):raise ValueError()
+                clean_categories.append({"name":name,"kind":kind})
+            clean_ages=[]
+            for a in ages:
+                lower=int(a["min_age"]);upper=int(a["max_age"])
+                if not 0<=lower<=upper<=110:raise ValueError()
+                clean_ages.append({"min_age":lower,"max_age":upper})
+            if len({c["name"].casefold() for c in clean_categories})!=len(clean_categories):raise ValueError()
+            if any(a["min_age"]<=b["max_age"] and b["min_age"]<=a["max_age"] for i,a in enumerate(clean_ages) for b in clean_ages[i+1:]):raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            return error("Categorias ou faixas etárias inválidas ou sobrepostas")
+        r=Race(organizer_id=user.id,categories=clean_categories,age_brackets=clean_ages,kits=clean_kits,lots=clean_lots,coupons=clean_coupons,title=title,city=city,date=date,published=False,publication_status="draft",regulation_text=str(data.get("regulation_text") or "").strip()[:20000],local_city=str(data.get("local_city") or city).strip()[:120])
         db.session.add(r); db.session.flush()
         for label,cents,capacity in validated: db.session.add(Distance(race_id=r.id,label=label,price_cents=cents,capacity=capacity))
         db.session.commit()
@@ -299,7 +320,27 @@ def create_app():
             if any(clean_lots[i]["ends_at"]>=clean_lots[i+1]["starts_at"] for i in range(len(clean_lots)-1)):raise ValueError()
         except (KeyError,TypeError,ValueError):
             return error("Revise os dados, limites e datas de kits, lotes e cupons")
+        try:
+            categories=data.get("categories",[])
+            ages=data.get("age_brackets",[])
+            if not isinstance(categories,list) or not isinstance(ages,list) or len(categories)>20 or len(ages)>30:raise ValueError()
+            clean_categories=[]
+            for c in categories:
+                name=str(c["name"]).strip()
+                kind=str(c["kind"]).strip().lower()
+                if not (1<=len(name)<=80 and kind in ("general","local","pcd","custom")):raise ValueError()
+                clean_categories.append({"name":name,"kind":kind})
+            clean_ages=[]
+            for a in ages:
+                lower=int(a["min_age"]);upper=int(a["max_age"])
+                if not 0<=lower<=upper<=110:raise ValueError()
+                clean_ages.append({"min_age":lower,"max_age":upper})
+            if len({c["name"].casefold() for c in clean_categories})!=len(clean_categories):raise ValueError()
+            if any(a["min_age"]<=b["max_age"] and b["min_age"]<=a["max_age"] for i,a in enumerate(clean_ages) for b in clean_ages[i+1:]):raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            return error("Categorias ou faixas etárias inválidas ou sobrepostas")
         r.title=title;r.city=city;r.date=date;r.local_city=city
+        r.categories=clean_categories;r.age_brackets=clean_ages
         r.regulation_text=str(data.get("regulation_text") or "").strip()[:20000]
         r.kits=clean_kits;r.lots=clean_lots;r.coupons=clean_coupons
         r.publication_status="draft";r.published=False
