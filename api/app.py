@@ -355,6 +355,26 @@ def create_app():
     def organizer_events(user):
         races=Race.query.filter_by(organizer_id=user.id).order_by(Race.id.desc()).all()
         return {"events":[race_data(r, True) for r in races]}
+    @app.get("/api/organizer/events/<int:race_id>/insights")
+    @auth("organizer")
+    def organizer_event_insights(user,race_id):
+        race=db.session.get(Race,race_id)
+        if not race or race.organizer_id!=user.id:return error("Corrida não encontrada",404)
+        distances=Distance.query.filter_by(race_id=race.id).order_by(Distance.id).all()
+        rows=db.session.query(Registration,User,Distance).join(User,Registration.runner_id==User.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id==race.id).order_by(Registration.id.desc()).all()
+        paid_states=("paid","confirmed","paid_confirmed")
+        occupied={d.id:0 for d in distances}
+        paid_count=0
+        for reg,runner,dist in rows:
+            if reg.status not in ("cancelled","canceled","refunded"):occupied[dist.id]+=1
+            if reg.status in paid_states:paid_count+=1
+        # Monetary figures here are nominal price x capacity, not collected revenue.
+        potential=sum(d.price_cents*d.capacity for d in distances)
+        return {"event":{"id":race.id,"title":race.title,"city":race.city,"date":race.date,"status":race.publication_status},
+                "potential_cents":potential,"paid_count":paid_count,"registrations_count":len(rows),
+                "available_vacancies":sum(max(0,d.capacity-occupied[d.id]) for d in distances),
+                "distances":[{"id":d.id,"label":d.label,"price_cents":d.price_cents,"capacity":d.capacity,"occupied":occupied[d.id],"available":max(0,d.capacity-occupied[d.id]),"potential_cents":d.price_cents*d.capacity} for d in distances],
+                "registrations":[{"id":reg.id,"name":runner.name,"email":runner.email,"distance":dist.label,"status":reg.status,"created_at":reg.created_at.isoformat() if reg.created_at else None} for reg,runner,dist in rows]}
     @app.get("/api/organizer/overview")
     @auth("organizer")
     def organizer_overview(user):
