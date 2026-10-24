@@ -406,13 +406,16 @@ def create_app():
         paid_states=("paid","confirmed","paid_confirmed")
         occupied={d.id:0 for d in distances}
         paid_count=0
+        confirmed_nominal_cents=0
         for reg,runner,dist in rows:
             if reg.status not in ("cancelled","canceled","refunded"):occupied[dist.id]+=1
-            if reg.status in paid_states:paid_count+=1
+            if reg.status in paid_states and reg.paid_at is not None:
+                paid_count+=1
+                confirmed_nominal_cents+=dist.price_cents
         # Monetary figures here are nominal price x capacity, not collected revenue.
         potential=sum(d.price_cents*d.capacity for d in distances)
         return {"event":{"id":race.id,"title":race.title,"city":race.city,"date":race.date,"status":race.publication_status},
-                "potential_cents":potential,"paid_count":paid_count,"registrations_count":len(rows),
+                "potential_cents":potential,"confirmed_nominal_cents":confirmed_nominal_cents,"paid_count":paid_count,"registrations_count":len(rows),
                 "available_vacancies":sum(max(0,d.capacity-occupied[d.id]) for d in distances),
                 "distances":[{"id":d.id,"label":d.label,"price_cents":d.price_cents,"capacity":d.capacity,"occupied":occupied[d.id],"available":max(0,d.capacity-occupied[d.id]),"potential_cents":d.price_cents*d.capacity} for d in distances],
                 "registrations":[{"id":reg.id,"name":runner.name,"email":runner.email,"distance":dist.label,"status":reg.status,"created_at":reg.created_at.isoformat() if reg.created_at else None} for reg,runner,dist in rows]}
@@ -424,6 +427,10 @@ def create_app():
         counts={"total_events":len(races),"drafts":sum((r.publication_status or "draft")=="draft" for r in races),"pending_review":sum(r.publication_status=="submitted" for r in races),"published":sum(r.published for r in races),"registrations":0}
         if ids:
             counts["registrations"]=db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id.in_(ids)).count()
+        paid_rows=db.session.query(Registration,Distance).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id.in_(ids),Registration.paid_at.isnot(None),Registration.status.in_(("paid","confirmed","paid_confirmed"))).all() if ids else []
+        counts["confirmed_registrations"]=len(paid_rows)
+        counts["confirmed_nominal_cents"]=sum(d.price_cents for reg,d in paid_rows)
+        counts["potential_cents"]=sum(d.price_cents*d.capacity for r in races for d in Distance.query.filter_by(race_id=r.id).all())
         return counts
     @app.post("/api/organizer/events/<int:race_id>/submit")
     @auth("organizer")
