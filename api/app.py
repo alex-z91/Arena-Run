@@ -243,11 +243,12 @@ def create_app():
                 if not isinstance(eligible,list) or not eligible or any(x not in [d[0] for d in validated] for x in eligible):raise ValueError()
                 clean_kits.append({"name":name,"items":[item.strip() for item in items],"price_cents":price,"capacity":stock,"distances":eligible})
             for l in lots:
-                name=str(l["name"]).strip();price=int(l["price_cents"]);starts=str(l["starts_at"]);ends=str(l["ends_at"])
+                name=str(l["name"]).strip();price=int(l["price_cents"]);starts=str(l["starts_at"]);ends=str(l["ends_at"]);kit_prices=l.get("kit_prices",{})
                 datetime.strptime(starts,"%Y-%m-%d");datetime.strptime(ends,"%Y-%m-%d")
                 if starts>ends or ends>date:raise ValueError()
                 if not (1<=len(name)<=80 and 0<=price<=10000000):raise ValueError()
-                clean_lots.append({"name":name,"price_cents":price,"starts_at":starts,"ends_at":ends})
+                if not isinstance(kit_prices,dict) or any(k not in [item["name"] for item in clean_kits] or not isinstance(v,int) or v<0 or v>10000000 for k,v in kit_prices.items()):raise ValueError()
+                clean_lots.append({"name":name,"price_cents":price,"starts_at":starts,"ends_at":ends,"kit_prices":kit_prices})
             for c in coupons:
                 code=str(c["code"]).strip().upper();percent=int(c["percent"]);limit=int(c["max_uses"])
                 if not (3<=len(code)<=32 and code.replace("-","").isalnum() and 1<=percent<=100 and 1<=limit<=100000):raise ValueError()
@@ -458,7 +459,7 @@ def create_app():
         today=datetime.now(timezone.utc).date().isoformat()
         current=next((l for l in (race.lots or []) if l.get("starts_at","9999")<=today<=l.get("ends_at","0000")),None)
         # O lote substitui o preço inteiro da inscrição; não adiciona ao kit.
-        gross=int(current["price_cents"]) if current else base
+        gross=(int(current["kit_prices"][selected["name"]]) if current and selected and selected["name"] in current.get("kit_prices",{}) else base) if selected else (int(current["price_cents"]) if current else base)
         if gross<0:raise ValueError("Preço inválido")
         coupon=None
         code=str(coupon_code or "").strip().upper()
@@ -468,7 +469,7 @@ def create_app():
             used=db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id==race.id,Registration.coupon_code==code,Registration.status.notin_(("cancelled","canceled","refunded"))).count()
             if used>=int(coupon.get("max_uses",0)):raise ValueError("Cupom esgotado")
         discount=(gross*int(coupon["percent"])+50)//100 if coupon else 0
-        return {"price_cents":gross-discount,"gross_cents":gross,"discount_cents":discount,"kit_name":selected["name"] if selected else None,"lot_name":current["name"] if current else None,"coupon_code":code or None}
+        return {"price_cents":gross-discount,"gross_cents":gross,"discount_cents":discount,"kit_name":selected["name"] if selected else None,"lot_name":current["name"] if current and (not selected or selected["name"] in current.get("kit_prices",{})) else None,"coupon_code":code or None}
     @app.post("/api/events/<int:race_id>/quote")
     def preview_registration_price(race_id):
         race=db.session.get(Race,race_id)
