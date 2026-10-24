@@ -233,10 +233,11 @@ def create_app():
         try:
             clean_kits=[];clean_lots=[];clean_coupons=[]
             for k in kits:
-                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"]); eligible=k.get("distances",[])
+                name=str(k["name"]).strip();price=int(k["price_cents"]);stock=int(k["capacity"]); eligible=k.get("distances",[]); items=k.get("items",[])
                 if not (1<=len(name)<=100 and 0<=price<=10000000 and 0<=stock<=100000):raise ValueError()
+                if not isinstance(items,list) or len(items)>30 or any(not isinstance(item,str) or not (1<=len(item.strip())<=80) for item in items):raise ValueError()
                 if not isinstance(eligible,list) or not eligible or any(x not in [d[0] for d in validated] for x in eligible):raise ValueError()
-                clean_kits.append({"name":name,"price_cents":price,"capacity":stock,"distances":eligible})
+                clean_kits.append({"name":name,"items":[item.strip() for item in items],"price_cents":price,"capacity":stock,"distances":eligible})
             for l in lots:
                 name=str(l["name"]).strip();price=int(l["price_cents"]);starts=str(l["starts_at"]);ends=str(l["ends_at"])
                 datetime.strptime(starts,"%Y-%m-%d");datetime.strptime(ends,"%Y-%m-%d")
