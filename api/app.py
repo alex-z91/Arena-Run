@@ -65,6 +65,10 @@ class Registration(db.Model):
     team_snapshot = db.Column(db.String(120), nullable=True)
     regulation_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
     paid_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    price_cents = db.Column(db.Integer, nullable=True)
+    kit_name = db.Column(db.String(100), nullable=True)
+    lot_name = db.Column(db.String(80), nullable=True)
+    coupon_code = db.Column(db.String(32), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 def create_app():
@@ -412,7 +416,7 @@ def create_app():
             if reg.status not in ("cancelled","canceled","refunded"):occupied[dist.id]+=1
             if reg.status in paid_states and reg.paid_at is not None:
                 paid_count+=1
-                confirmed_nominal_cents+=dist.price_cents
+                confirmed_nominal_cents+=(reg.price_cents if reg.price_cents is not None else dist.price_cents)
         # Monetary figures here are nominal price x capacity, not collected revenue.
         potential=sum(d.price_cents*d.capacity for d in distances)
         return {"event":{"id":race.id,"title":race.title,"city":race.city,"date":race.date,"status":race.publication_status},
@@ -430,7 +434,7 @@ def create_app():
             counts["registrations"]=db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id.in_(ids)).count()
         paid_rows=db.session.query(Registration,Distance).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id.in_(ids),Registration.paid_at.isnot(None),Registration.status.in_(("paid","confirmed","paid_confirmed"))).all() if ids else []
         counts["confirmed_registrations"]=len(paid_rows)
-        counts["confirmed_nominal_cents"]=sum(d.price_cents for reg,d in paid_rows)
+        counts["confirmed_nominal_cents"]=sum(reg.price_cents if reg.price_cents is not None else d.price_cents for reg,d in paid_rows)
         counts["potential_cents"]=sum(d.price_cents*d.capacity for r in races for d in Distance.query.filter_by(race_id=r.id).all())
         return counts
     @app.post("/api/organizer/events/<int:race_id>/submit")
@@ -444,6 +448,39 @@ def create_app():
         r.published=False
         db.session.commit()
         return race_data(r, True)
+    def registration_quote(race,dist,kit_name,coupon_code):
+        kits=race.kits or []
+        selected=None
+        if kits:
+            selected=next((k for k in kits if k.get("name")==kit_name and dist.label in k.get("distances",[])),None)
+            if selected is None:raise ValueError("Selecione um kit válido para a distância")
+        base=int(selected["price_cents"]) if selected else dist.price_cents
+        today=datetime.now(timezone.utc).date().isoformat()
+        current=next((l for l in (race.lots or []) if l.get("starts_at","9999")<=today<=l.get("ends_at","0000")),None)
+        # O lote substitui o preço inteiro da inscrição; não adiciona ao kit.
+        gross=int(current["price_cents"]) if current else base
+        if gross<0:raise ValueError("Preço inválido")
+        coupon=None
+        code=str(coupon_code or "").strip().upper()
+        if code:
+            coupon=next((c for c in (race.coupons or []) if c.get("code")==code),None)
+            if coupon is None:raise ValueError("Cupom inválido")
+            used=db.session.query(Registration.id).join(Distance,Registration.distance_id==Distance.id).filter(Distance.race_id==race.id,Registration.coupon_code==code,Registration.status.notin_(("cancelled","canceled","refunded"))).count()
+            if used>=int(coupon.get("max_uses",0)):raise ValueError("Cupom esgotado")
+        discount=(gross*int(coupon["percent"])+50)//100 if coupon else 0
+        return {"price_cents":gross-discount,"gross_cents":gross,"discount_cents":discount,"kit_name":selected["name"] if selected else None,"lot_name":current["name"] if current else None,"coupon_code":code or None}
+    @app.post("/api/events/<int:race_id>/quote")
+    def preview_registration_price(race_id):
+        race=db.session.get(Race,race_id)
+        if not race or not race.published:return error("Corrida indisponível",404)
+        data=payload()
+        try:dist_id=int(data.get("distance_id",0))
+        except (TypeError,ValueError):return error("Distância inválida")
+        dist=db.session.get(Distance,dist_id)
+        if not dist or dist.race_id!=race.id:return error("Distância inválida",400)
+        try:quote=registration_quote(race,dist,data.get("kit_name"),data.get("coupon_code"))
+        except (ValueError,TypeError,KeyError) as exc:return error(str(exc),400)
+        return {k:v for k,v in quote.items() if k!="coupon_code"}
     @app.post("/api/registrations")
     @auth("runner", "organizer", "master")
     def create_registration(user):
@@ -470,9 +507,11 @@ def create_app():
         if age<0: return error("Data de nascimento incompatível com a corrida")
         # Categoria etária definitiva depende de regulamento versionado por evento.
         locality="local" if user.city.strip().casefold()==(race.local_city or race.city).strip().casefold() else "general"
-        reg=Registration(runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team,regulation_accepted_at=datetime.now(timezone.utc))
+        try:quote=registration_quote(race,d,data.get("kit_name"),data.get("coupon_code"))
+        except (ValueError,TypeError,KeyError) as exc:return error(str(exc),400)
+        reg=Registration(price_cents=quote["price_cents"],kit_name=quote["kit_name"],lot_name=quote["lot_name"],coupon_code=quote["coupon_code"],runner_id=user.id,distance_id=d.id,shirt_size=size,category_snapshot=f"Idade na prova: {age}",locality_snapshot=locality,team_snapshot=user.team,regulation_accepted_at=datetime.now(timezone.utc))
         db.session.add(reg); db.session.commit()
-        return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"pending_integration","price_cents":d.price_cents}),201
+        return jsonify({"id":reg.id,"status":reg.status,"payment_mode":"pending_integration","price_cents":quote["price_cents"],"kit_name":quote["kit_name"],"lot_name":quote["lot_name"]}),201
     @app.get("/api/registrations/me")
     @auth()
     def my_registrations(user):
@@ -481,7 +520,7 @@ def create_app():
         for x in rows:
             dist=db.session.get(Distance,x.distance_id)
             race=db.session.get(Race,dist.race_id)
-            result.append({"id":x.id,"race_id":race.id,"race":race.title,"city":race.city,"date":race.date,"distance":dist.label,"price_cents":dist.price_cents,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"team":x.team_snapshot,"created_at":x.created_at.isoformat() if x.created_at else None,"paid_at":x.paid_at.isoformat() if x.paid_at else None,"regulation_accepted_at":x.regulation_accepted_at.isoformat() if x.regulation_accepted_at else None})
+            result.append({"id":x.id,"race_id":race.id,"race":race.title,"city":race.city,"date":race.date,"distance":dist.label,"price_cents":x.price_cents if x.price_cents is not None else dist.price_cents,"kit_name":x.kit_name,"lot_name":x.lot_name,"shirt_size":x.shirt_size,"status":x.status,"category":x.category_snapshot,"locality":x.locality_snapshot,"team":x.team_snapshot,"created_at":x.created_at.isoformat() if x.created_at else None,"paid_at":x.paid_at.isoformat() if x.paid_at else None,"regulation_accepted_at":x.regulation_accepted_at.isoformat() if x.regulation_accepted_at else None})
         return {"registrations":result}
     @app.get("/api/organizer/registrations")
     @auth("organizer","master")
