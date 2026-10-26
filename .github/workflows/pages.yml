@@ -30,6 +30,7 @@ jobs:
           cp organizador.html _site/organizador.html
           cp config.js _site/config.js
           cp CNAME _site/CNAME
+          cp -r assets _site/assets
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
